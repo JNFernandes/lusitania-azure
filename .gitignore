@@ -14,3 +14,6 @@ terraform.tfvars
 crash.log
 
 # NOT ignored on purpose: .terraform.lock.hcl (pins the provider version for everyone)
+
+#pdf
+*.pdf
