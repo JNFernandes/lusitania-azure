@@ -1,0 +1,79 @@
+# CI FOR THE INFRASTRUCTURE: every push and pull request is checked, and its PLAN is shown.
+# Nothing is ever APPLIED from here: applying stays a deliberate step (`terraform apply` by a person).
+#
+# Login: OIDC (no secret stored in GitHub). The workflow asks GitHub for a short-lived token
+# (permission id-token: write); Entra ID trusts it for this repo's main branch and pull requests
+# only (scripts/bootstrap_ci.ps1) and swaps it for an Azure token.
+name: terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # ask GitHub for the OIDC token
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  # azurerm, azuread and the azurerm backend all read these to log in with OIDC
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  # the two personal variables (normally in terraform.tfvars, which is not in Git)
+  TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_alert_email: ${{ secrets.TF_VAR_ALERT_EMAIL }}
+
+jobs:
+  check:
+    name: fmt + validate (no Azure)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.x"   # the version that wrote the state: an older one can't read it
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+      - name: terraform validate (dev, prod)
+        run: |
+          for env in dev prod; do
+            echo "::group::$env"
+            terraform -chdir=envs/$env init -backend=false -input=false
+            terraform -chdir=envs/$env validate
+            echo "::endgroup::"
+          done
+
+  plan:
+    name: plan ${{ matrix.environment }}
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    defaults:
+      run:
+        working-directory: envs/${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.x"
+          terraform_wrapper: false
+      - name: terraform init (remote state, OIDC login)
+        run: terraform init -input=false
+      - name: terraform plan
+        run: terraform plan -input=false -lock-timeout=5m -no-color -out=tfplan | tee plan.txt
+      - name: Plan → run summary
+        if: always()
+        run: |
+          {
+            echo "## terraform plan · ${{ matrix.environment }}"
+            echo '```'
+            grep -E '^(Plan:|No changes|Error)|will be (created|destroyed|updated|replaced)|must be replaced' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

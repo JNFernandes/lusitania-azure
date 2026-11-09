@@ -1,0 +1,4 @@
+# The helper scripts in scripts/ (run them in Project 2's venv, which already has duckdb)
+duckdb>=1.1
+azure-identity>=1.17
+azure-keyvault-secrets>=4.8

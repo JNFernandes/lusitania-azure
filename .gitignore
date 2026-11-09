@@ -1,0 +1,16 @@
+# Terraform's working folder: the downloaded provider (hundreds of MB)
+.terraform/
+
+# STATE: Terraform's record of what it created. It can contain secrets (keys, connection
+# strings), so it is never committed. (Later in this project it moves to an Azure storage account.)
+*.tfstate
+*.tfstate.*
+
+# Your values: subscription id, e-mail
+terraform.tfvars
+
+# Saved plans and crash logs
+*.tfplan
+crash.log
+
+# NOT ignored on purpose: .terraform.lock.hcl (pins the provider version for everyone)
