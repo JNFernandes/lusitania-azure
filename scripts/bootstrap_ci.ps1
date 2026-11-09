@@ -3,8 +3,10 @@
 # OIDC = no secret anywhere. GitHub gives each workflow run a short-lived token saying
 # "I am repo X, branch Y". The FEDERATED CREDENTIALS below tell Entra ID to accept GitHub's tokens
 # for exactly two cases, and nothing else:
-#     repo:<owner>/<repo>:ref:refs/heads/main     pushes to main
-#     repo:<owner>/<repo>:pull_request            pull requests
+#     repo:<owner>@<owner id>/<repo>@<repo id>:ref:refs/heads/main     pushes to main
+#     repo:<owner>@<owner id>/<repo>@<repo id>:pull_request            pull requests
+# GitHub puts the account and repo ID NUMBERS in the subject: a repo deleted and re-created
+# with the same name gets a new id, so Azure stops trusting it. The ids come from GitHub's API.
 #
 # Roles (least privilege for PLANNING, not applying):
 #     Reader on the subscription                               see what exists
@@ -28,15 +30,22 @@ $spId = az ad sp list --filter "appId eq '$appId'" --query "[0].id" -o tsv
 if (-not $spId) { $spId = az ad sp create --id $appId --query id -o tsv; Check "sp create" }
 
 Write-Host "2/4 federated credentials (trust GitHub for ${Repo}: main + pull requests)"
+$gh = Invoke-RestMethod "https://api.github.com/repos/$Repo"          # public repo: no login needed
+$base = "repo:$($gh.owner.login)@$($gh.owner.id)/$($gh.name)@$($gh.id)"
 $existing = az ad app federated-credential list --id $appId --query "[].name" -o tsv
 foreach ($fc in @(
-        @{ name = "github-main";          subject = "repo:${Repo}:ref:refs/heads/main" },
-        @{ name = "github-pull-requests"; subject = "repo:${Repo}:pull_request" })) {
-    if ($existing -contains $fc.name) { Write-Host "   $($fc.name): already there"; continue }
+        @{ name = "github-main";          subject = "${base}:ref:refs/heads/main" },
+        @{ name = "github-pull-requests"; subject = "${base}:pull_request" })) {
+    $action = if ($existing -contains $fc.name) { "update" } else { "create" }
     $file = New-TemporaryFile
     @{ name = $fc.name; issuer = "https://token.actions.githubusercontent.com"; subject = $fc.subject
        audiences = @("api://AzureADTokenExchange") } | ConvertTo-Json -Compress | Set-Content $file
-    az ad app federated-credential create --id $appId --parameters "@$($file.FullName)" --output none
+    if ($action -eq "update") {
+        az ad app federated-credential update --id $appId --federated-credential-id $fc.name `
+            --parameters "@$($file.FullName)" --output none
+    } else {
+        az ad app federated-credential create --id $appId --parameters "@$($file.FullName)" --output none
+    }
     Check "federated credential $($fc.name)"
     Remove-Item $file
     Write-Host "   $($fc.name): $($fc.subject)"
